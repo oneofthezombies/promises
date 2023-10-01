@@ -19,45 +19,6 @@ func TestNew(t *testing.T) {
 	}
 }
 
-func TestThen(t *testing.T) {
-	ctx := context.Background()
-	p := New(func(resolve Resolve[int], reject Reject) {
-		resolve(1)
-	})
-
-	p.Then(ctx, func(value int) {
-		if value != 1 {
-			t.Errorf("expected value to be 1, got %d", value)
-		}
-	}).Catch(ctx, func(reason error) {
-		t.Errorf("expected reason to be nil, got %v", reason)
-	})
-}
-
-func TestCatch(t *testing.T) {
-	ctx := context.Background()
-	p := New(func(resolve Resolve[int], reject Reject) {
-		reject(errors.New("something went wrong"))
-	})
-
-	p.Then(ctx, func(value int) {
-		t.Errorf("expected value to be nil, got %d", value)
-	}).Catch(ctx, func(reason error) {
-		t.Logf("reason: %v", reason)
-	})
-}
-
-func TestFinally(t *testing.T) {
-	ctx := context.Background()
-	p := New(func(resolve Resolve[int], reject Reject) {
-		resolve(1)
-	})
-
-	p.Finally(ctx, func() {
-		t.Logf("finally")
-	})
-}
-
 func TestAwait(t *testing.T) {
 	ctx := context.Background()
 	p := New(func(resolve Resolve[int], reject Reject) {
@@ -179,39 +140,32 @@ func TestAwaitStruct(t *testing.T) {
 	}
 }
 
-func TestAll(t *testing.T) {
+func TestAllWithLoop(t *testing.T) {
 	ctx := context.Background()
-	p1 := New(func(resolve Resolve[int], reject Reject) {
-		resolve(1)
-	})
-	p2 := New(func(resolve Resolve[int], reject Reject) {
-		resolve(2)
-	})
-	p3 := New(func(resolve Resolve[int], reject Reject) {
-		resolve(3)
-	})
+	var promises []*Promise[int]
+	for i := 0; i < 100; i++ {
+		i := i // https://golang.org/doc/faq#closures_and_goroutines
+		p := New(func(resolve Resolve[int], reject Reject) {
+			resolve(i)
+		})
 
-	p := All(ctx, p1, p2, p3)
+		promises = append(promises, p)
+	}
 
+	p := All(ctx, promises...)
 	v, err := p.Await(ctx)
 	if err != nil {
 		t.Errorf("expected error to be nil, got %v", err)
 	}
 
-	if len(v) != 3 {
-		t.Errorf("expected length to be 3, got %d", len(v))
+	if len(v) != 100 {
+		t.Errorf("expected length to be 100, got %d", len(v))
 	}
 
-	if v[0] != 1 {
-		t.Errorf("expected value to be 1, got %d", v[0])
-	}
-
-	if v[1] != 2 {
-		t.Errorf("expected value to be 2, got %d", v[1])
-	}
-
-	if v[2] != 3 {
-		t.Errorf("expected value to be 3, got %d", v[2])
+	for i, value := range v {
+		if value != i {
+			t.Errorf("expected value to be %d, got %d", i, value)
+		}
 	}
 }
 
@@ -248,7 +202,6 @@ func TestAllSettled(t *testing.T) {
 	})
 
 	p := AllSettled(ctx, p1, p2, p3)
-
 	v, err := p.Await(ctx)
 	if err != nil {
 		t.Errorf("expected error to be nil, got %v", err)
@@ -295,7 +248,6 @@ func TestAllSettledWithLoop(t *testing.T) {
 	}
 
 	p := AllSettled(ctx, promises...)
-
 	v, err := p.Await(ctx)
 	if err != nil {
 		t.Errorf("expected error to be nil, got %v", err)

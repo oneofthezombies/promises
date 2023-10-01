@@ -16,10 +16,6 @@ type Resolve[T any] func(T)
 type Reject func(error)
 type Executor[T any] func(Resolve[T], Reject)
 
-type OnFulfilled[P any] func(P)
-type OnRejected func(error)
-type OnFinally func()
-
 // Reference: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise
 type Promise[T any] struct {
 	optionalValue option.Option[T]
@@ -98,65 +94,6 @@ func (p *Promise[T]) isRejected() bool {
 
 func (p *Promise[T]) isSettled() bool {
 	return p.isFulfilled() || p.isRejected()
-}
-
-// Then registers a callback that is called when the promise is fulfilled.
-// If context is canceled, the callback is not called.
-func (p *Promise[T]) Then(ctx context.Context, onFulfilled OnFulfilled[T]) *Promise[T] {
-	select {
-	case <-ctx.Done():
-		return nil
-	case <-p.done:
-		break
-	}
-
-	p.mutex.RLock()
-	o := p.optionalValue
-	p.mutex.RUnlock()
-
-	v, ok := o.Value()
-	if !ok {
-		return p
-	}
-
-	onFulfilled(v)
-	return p
-}
-
-// Catch registers a callback that is called when the promise is rejected.
-// If context is canceled, the callback is not called.
-func (p *Promise[T]) Catch(ctx context.Context, onRejected OnRejected) *Promise[T] {
-	select {
-	case <-ctx.Done():
-		return nil
-	case <-p.done:
-		break
-	}
-
-	p.mutex.RLock()
-	r := p.reason
-	p.mutex.RUnlock()
-
-	if r == nil {
-		return p
-	}
-
-	onRejected(r)
-	return p
-}
-
-// Finally registers a callback that is called when the promise is settled.
-// If context is canceled, the callback is not called.
-func (p *Promise[T]) Finally(ctx context.Context, onFinally OnFinally) *Promise[T] {
-	select {
-	case <-ctx.Done():
-		return nil
-	case <-p.done:
-		break
-	}
-
-	onFinally()
-	return p
 }
 
 // Await blocks until the promise is settled and returns the value and reason or an error if the context is canceled.
