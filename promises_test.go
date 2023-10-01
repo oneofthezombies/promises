@@ -17,8 +17,6 @@ func TestNew(t *testing.T) {
 	if p == nil {
 		t.Errorf("expected promise to be non-nil")
 	}
-
-	t.Logf("promise: %+v", p)
 }
 
 func TestThen(t *testing.T) {
@@ -66,16 +64,47 @@ func TestAwait(t *testing.T) {
 		resolve(1)
 	})
 
-	o, err := p.Await(ctx)
+	v, err := p.Await(ctx)
 	if err != nil {
 		t.Errorf("expected error to be nil, got %v", err)
 	}
 
-	if !o.Has() {
-		t.Errorf("expected value to be Some, got None")
+	if v != 1 {
+		t.Errorf("expected value to be 1, got %d", v)
+	}
+}
+
+func TestAwaitMultipleResolve(t *testing.T) {
+	ctx := context.Background()
+	p := New(func(resolve Resolve[int], reject Reject) {
+		resolve(1)
+		resolve(2)
+	})
+
+	v, err := p.Await(ctx)
+	if err != nil {
+		t.Errorf("expected error to be nil, got %v", err)
 	}
 
-	v := o.Value()
+	if v != 1 {
+		t.Errorf("expected value to be 1, got %d", v)
+	}
+}
+
+func TestAwaitWithGo(t *testing.T) {
+	ctx := context.Background()
+	p := New(func(resolve Resolve[int], reject Reject) {
+		go func() {
+			time.Sleep(1 * time.Second)
+			resolve(1)
+		}()
+	})
+
+	v, err := p.Await(ctx)
+	if err != nil {
+		t.Errorf("expected error to be nil, got %v", err)
+	}
+
 	if v != 1 {
 		t.Errorf("expected value to be 1, got %d", v)
 	}
@@ -112,16 +141,11 @@ func TestAwaitString(t *testing.T) {
 		resolve("hello")
 	})
 
-	o, err := p.Await(ctx)
+	v, err := p.Await(ctx)
 	if err != nil {
 		t.Errorf("expected error to be nil, got %v", err)
 	}
 
-	if !o.Has() {
-		t.Errorf("expected value to be Some, got None")
-	}
-
-	v := o.Value()
 	if v != "hello" {
 		t.Errorf("expected value to be hello, got %s", v)
 	}
@@ -133,13 +157,9 @@ func TestAwaitError(t *testing.T) {
 		reject(errors.New("something went wrong"))
 	})
 
-	o, err := p.Await(ctx)
+	_, err := p.Await(ctx)
 	if err == nil {
 		t.Errorf("expected error to be non-nil")
-	}
-
-	if o.Has() {
-		t.Errorf("expected value to be None, got Some")
 	}
 }
 
@@ -149,16 +169,11 @@ func TestAwaitStruct(t *testing.T) {
 		resolve(struct{ Name string }{Name: "hello"})
 	})
 
-	o, err := p.Await(ctx)
+	v, err := p.Await(ctx)
 	if err != nil {
 		t.Errorf("expected error to be nil, got %v", err)
 	}
 
-	if !o.Has() {
-		t.Errorf("expected value to be Some, got None")
-	}
-
-	v := o.Value()
 	if v.Name != "hello" {
 		t.Errorf("expected value to be hello, got %s", v.Name)
 	}
@@ -178,16 +193,11 @@ func TestAll(t *testing.T) {
 
 	p := All(ctx, p1, p2, p3)
 
-	o, err := p.Await(ctx)
+	v, err := p.Await(ctx)
 	if err != nil {
 		t.Errorf("expected error to be nil, got %v", err)
 	}
 
-	if !o.Has() {
-		t.Errorf("expected value to be Some, got None")
-	}
-
-	v := o.Value()
 	if len(v) != 3 {
 		t.Errorf("expected length to be 3, got %d", len(v))
 	}
@@ -219,13 +229,9 @@ func TestAllWithRejected(t *testing.T) {
 
 	p := All(ctx, p1, p2, p3)
 
-	o, err := p.Await(ctx)
+	_, err := p.Await(ctx)
 	if err == nil {
 		t.Errorf("expected error to be non-nil")
-	}
-
-	if o.Has() {
-		t.Errorf("expected value to be None, got Some")
 	}
 }
 
@@ -243,16 +249,11 @@ func TestAllSettled(t *testing.T) {
 
 	p := AllSettled(ctx, p1, p2, p3)
 
-	o, err := p.Await(ctx)
+	v, err := p.Await(ctx)
 	if err != nil {
 		t.Errorf("expected error to be nil, got %v", err)
 	}
 
-	if !o.Has() {
-		t.Errorf("expected value to be Some, got None")
-	}
-
-	v := o.Value()
 	if len(v) != 3 {
 		t.Errorf("expected length to be 3, got %d", len(v))
 	}
@@ -261,8 +262,8 @@ func TestAllSettled(t *testing.T) {
 		t.Errorf("expected status to be Fulfilled, got %v", v[0].Status)
 	}
 
-	if v[0].Value.Value() != 1 {
-		t.Errorf("expected value to be 1, got %d", v[0].Value.Value())
+	if v[0].Value != 1 {
+		t.Errorf("expected value to be 1, got %d", v[0].Value)
 	}
 
 	if v[1].Status != Rejected {
@@ -277,7 +278,40 @@ func TestAllSettled(t *testing.T) {
 		t.Errorf("expected status to be Fulfilled, got %v", v[2].Status)
 	}
 
-	if v[2].Value.Value() != 3 {
-		t.Errorf("expected value to be 3, got %d", v[2].Value.Value())
+	if v[2].Value != 3 {
+		t.Errorf("expected value to be 3, got %d", v[2].Value)
+	}
+}
+
+func TestAllSettledWithLoop(t *testing.T) {
+	ctx := context.Background()
+	var promises []*Promise[int]
+	for i := 0; i < 100; i++ {
+		i := i // https://golang.org/doc/faq#closures_and_goroutines
+		p := New(func(resolve Resolve[int], reject Reject) {
+			resolve(i)
+		})
+		promises = append(promises, p)
+	}
+
+	p := AllSettled(ctx, promises...)
+
+	v, err := p.Await(ctx)
+	if err != nil {
+		t.Errorf("expected error to be nil, got %v", err)
+	}
+
+	if len(v) != 100 {
+		t.Errorf("expected length to be 100, got %d", len(v))
+	}
+
+	for i, result := range v {
+		if result.Status != Fulfilled {
+			t.Errorf("expected status to be Fulfilled, got %v", result.Status)
+		}
+
+		if result.Value != i {
+			t.Errorf("expected value to be %d, got %d", i, result.Value)
+		}
 	}
 }

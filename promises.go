@@ -9,24 +9,23 @@ import (
 )
 
 var (
-	errReasonIsNil       = errors.New("reason must not be nil")
-	errOptionValueIsNone = errors.New("option value must not be None")
+	errNilReason = errors.New("nil reason")
 )
 
 type Resolve[T any] func(T)
 type Reject func(error)
 type Executor[T any] func(Resolve[T], Reject)
 
-type OnFulfilled[T any] func(T)
+type OnFulfilled[P any] func(P)
 type OnRejected func(error)
 type OnFinally func()
 
 // Reference: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise
 type Promise[T any] struct {
-	value  option.Option[T]
-	reason error
-	done   chan any
-	mutex  sync.RWMutex
+	optionalValue option.Option[T]
+	reason        error
+	done          chan any
+	mutex         sync.RWMutex
 }
 
 type Status int32
@@ -49,9 +48,9 @@ func (s Status) String() string {
 // New creates a new promise.
 func New[T any](executor Executor[T]) *Promise[T] {
 	p := &Promise[T]{
-		value:  option.None[T](),
-		reason: nil,
-		done:   make(chan any),
+		optionalValue: option.None[T](),
+		reason:        nil,
+		done:          make(chan any),
 	}
 
 	resolve := func(value T) {
@@ -63,14 +62,10 @@ func New[T any](executor Executor[T]) *Promise[T] {
 		}
 
 		defer close(p.done)
-		p.value = option.Some(value)
+		p.optionalValue = option.Some(value)
 	}
 
 	reject := func(reason error) {
-		if reason == nil {
-			panic(errReasonIsNil)
-		}
-
 		p.mutex.Lock()
 		defer p.mutex.Unlock()
 
@@ -79,6 +74,11 @@ func New[T any](executor Executor[T]) *Promise[T] {
 		}
 
 		defer close(p.done)
+		if reason == nil {
+			p.reason = errNilReason
+			return
+		}
+
 		p.reason = reason
 	}
 
@@ -88,7 +88,8 @@ func New[T any](executor Executor[T]) *Promise[T] {
 }
 
 func (p *Promise[T]) isFulfilled() bool {
-	return p.value.Has()
+	_, ok := p.optionalValue.Value()
+	return ok
 }
 
 func (p *Promise[T]) isRejected() bool {
@@ -110,14 +111,15 @@ func (p *Promise[T]) Then(ctx context.Context, onFulfilled OnFulfilled[T]) *Prom
 	}
 
 	p.mutex.RLock()
-	v := p.value
+	o := p.optionalValue
 	p.mutex.RUnlock()
 
-	if !v.Has() {
+	v, ok := o.Value()
+	if !ok {
 		return p
 	}
 
-	onFulfilled(v.Value())
+	onFulfilled(v)
 	return p
 }
 
@@ -158,19 +160,22 @@ func (p *Promise[T]) Finally(ctx context.Context, onFinally OnFinally) *Promise[
 }
 
 // Await blocks until the promise is settled and returns the value and reason or an error if the context is canceled.
-func (p *Promise[T]) Await(ctx context.Context) (option.Option[T], error) {
+func (p *Promise[T]) Await(ctx context.Context) (T, error) {
 	select {
 	case <-ctx.Done():
-		return option.None[T](), ctx.Err()
+		o := option.None[T]()
+		v, _ := o.Value()
+		return v, ctx.Err()
 	case <-p.done:
 		break
 	}
 
 	p.mutex.RLock()
-	v := p.value
+	o := p.optionalValue
 	r := p.reason
 	p.mutex.RUnlock()
 
+	v, _ := o.Value()
 	return v, r
 }
 
@@ -182,11 +187,12 @@ func (p *Promise[T]) Done() <-chan any {
 // Get the value that the promise was fulfilled with.
 // This method does not guarantee that the promise is settled.
 // If you want to ensure that the promise is settled, use the Await() or Done() method before calling this method.
-func (p *Promise[T]) Value() option.Option[T] {
+func (p *Promise[T]) Value() T {
 	p.mutex.RLock()
-	v := p.value
+	o := p.optionalValue
 	p.mutex.RUnlock()
 
+	v, _ := o.Value()
 	return v
 }
 
@@ -214,10 +220,11 @@ func (p *Promise[T]) Err() error {
 // If you want to ensure that the promise is settled, use the Await() or Done() method before calling this method.
 func (p *Promise[T]) IsFulfilled() bool {
 	p.mutex.RLock()
-	v := p.value
+	o := p.optionalValue
 	p.mutex.RUnlock()
 
-	return v.Has()
+	_, ok := o.Value()
+	return ok
 }
 
 // Returns true if the promise is rejected.
@@ -236,11 +243,12 @@ func (p *Promise[T]) IsRejected() bool {
 // If you want to ensure that the promise is settled, use the Await() or Done() method before calling this method.
 func (p *Promise[T]) IsSettled() bool {
 	p.mutex.RLock()
-	v := p.value
+	o := p.optionalValue
 	r := p.reason
 	p.mutex.RUnlock()
 
-	return v.Has() || r != nil
+	_, ok := o.Value()
+	return ok || r != nil
 }
 
 // Reference: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise/all
@@ -254,18 +262,13 @@ func All[T any](ctx context.Context, promises ...*Promise[T]) *Promise[[]T] {
 			go func(i int, promise *Promise[T]) {
 				defer wg.Done()
 
-				o, err := promise.Await(ctx)
+				v, err := promise.Await(ctx)
 				if err != nil {
 					reject(err)
 					return
 				}
 
-				if !o.Has() {
-					reject(errOptionValueIsNone)
-					return
-				}
-
-				results[i] = o.Value()
+				results[i] = v
 			}(i, promise)
 		}
 
@@ -278,7 +281,7 @@ func All[T any](ctx context.Context, promises ...*Promise[T]) *Promise[[]T] {
 
 type SettledResult[T any] struct {
 	Status Status
-	Value  option.Option[T]
+	Value  T
 	Reason error
 }
 
@@ -293,18 +296,13 @@ func AllSettled[T any](ctx context.Context, promises ...*Promise[T]) *Promise[[]
 			go func(i int, promise *Promise[T]) {
 				defer wg.Done()
 
-				o, err := promise.Await(ctx)
+				v, err := promise.Await(ctx)
 				if err != nil {
 					results[i] = SettledResult[T]{Status: Rejected, Reason: err}
 					return
 				}
 
-				if !o.Has() {
-					results[i] = SettledResult[T]{Status: Rejected, Reason: errOptionValueIsNone}
-					return
-				}
-
-				results[i] = SettledResult[T]{Status: Fulfilled, Value: o}
+				results[i] = SettledResult[T]{Status: Fulfilled, Value: v}
 			}(i, promise)
 		}
 
